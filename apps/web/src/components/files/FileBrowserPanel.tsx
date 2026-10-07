@@ -28,7 +28,7 @@ import { areAllDirectoriesExpanded, setAllDirectoriesExpanded } from "./fileTree
 import { buildFileTreePathUpdates } from "./fileTreePathReconciliation";
 import { useDirectoryEntries } from "./useDirectoryEntries";
 import { useProjectPathSearch } from "~/state/queries";
-import { resolvePathLinkTarget } from "~/terminal-links";
+import { joinWorkspacePath } from "~/terminal-links";
 
 interface FileBrowserPanelProps {
   environmentId: EnvironmentId;
@@ -113,7 +113,7 @@ export default function FileBrowserPanel({
   const composerRef = useComposerHandleContext();
   const fileContextMenu = useFileContextMenu(environmentId);
   const resolveEntryPath = useCallback(
-    (path: string) => (absolutePaths ? resolvePathLinkTarget(path, cwd) : path),
+    (path: string) => (absolutePaths ? joinWorkspacePath(cwd, path) : path),
     [absolutePaths, cwd],
   );
   const {
