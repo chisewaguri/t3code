@@ -5,6 +5,7 @@ import {
   extractTerminalLinks,
   isTerminalLinkActivation,
   isTerminalUrl,
+  joinWorkspacePath,
   resolvePathLinkTarget,
   type TerminalBufferLineLike,
 } from "./terminal-links";
@@ -241,5 +242,18 @@ describe("isTerminalLinkActivation", () => {
         "Linux",
       ),
     ).toBe(false);
+  });
+});
+
+describe("joinWorkspacePath", () => {
+  it("joins entry names literally instead of as link syntax", () => {
+    expect(joinWorkspacePath("/home/me/other", "~/child.ts")).toBe("/home/me/other/~/child.ts");
+    expect(joinWorkspacePath("/home/me/other", "notes:12")).toBe("/home/me/other/notes:12");
+  });
+
+  it("uses backslashes under a Windows root", () => {
+    expect(joinWorkspacePath("C:\\Users\\me\\other\\", "docs/readme.md")).toBe(
+      "C:\\Users\\me\\other\\docs\\readme.md",
+    );
   });
 });

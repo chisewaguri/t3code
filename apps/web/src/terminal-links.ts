@@ -118,6 +118,11 @@ function joinPath(base: string, next: string, separator: "/" | "\\"): string {
   return `${cleanBase}/${next.replace(/^\/+/, "")}`;
 }
 
+/** Join a plain relative entry path to a root, without link syntax such as `~/` or `:line`. */
+export function joinWorkspacePath(root: string, relativePath: string): string {
+  return joinPath(root, relativePath, isWindowsPathStyle(root) ? "\\" : "/");
+}
+
 function inferHomeFromCwd(cwd: string): string | undefined {
   const posixUser = cwd.match(/^\/Users\/([^/]+)/);
   if (posixUser?.[1]) {
