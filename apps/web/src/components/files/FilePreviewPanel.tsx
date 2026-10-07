@@ -37,6 +37,7 @@ import {
   squashAtomCommandFailure,
 } from "@t3tools/client-runtime/state/runtime";
 import { mediaFileReference } from "@t3tools/client-runtime/media-reference";
+import { fileBasename } from "@t3tools/client-runtime/markdown-links";
 import { FolderTree, Globe2, WrapTextIcon } from "lucide-react";
 import { Code2, Eye, Table2 } from "lucide";
 import * as Schema from "effect/Schema";
@@ -1061,8 +1062,11 @@ export default function FilePreviewPanel({
   // a file surface and the read fails. Keep the breadcrumbs, drop the preview
   // pane, and let the tree fill the surface with the folder revealed. Mutation
   // refresh stays on so the surface notices if the path becomes a file. A host
-  // path cannot be revealed in the workspace tree, so it keeps the read error.
-  const isDirectory = file.isNotFile && !isHostFile;
+  // folder gets an explorer rooted at itself; its child paths stay absolute
+  // because the chat still belongs to the original workspace.
+  const isDirectory = file.isNotFile && attachment === undefined;
+  const hostDirectory = isDirectory && isHostFile ? relativePath : null;
+  const explorerCwd = hostDirectory ?? cwd;
   // Everything preview-related keys off previewPath; a folder has no preview.
   const previewPath = isDirectory ? null : relativePath;
   const [explorerOpen, setExplorerOpen] = useState(initialExplorerOpen);
@@ -1453,11 +1457,12 @@ export default function FilePreviewPanel({
             )}
           >
             <FileBrowserPanel
-              key={`${environmentId}:${cwd}`}
+              key={`${environmentId}:${explorerCwd}`}
               environmentId={environmentId}
-              cwd={cwd}
-              projectName={projectName}
-              selectedPath={relativePath}
+              cwd={explorerCwd}
+              projectName={hostDirectory ? fileBasename(hostDirectory) : projectName}
+              absolutePaths={hostDirectory !== null}
+              selectedPath={hostDirectory !== null ? null : relativePath}
               selectedPathRevealId={revealRequestId}
               onOpenFile={onOpenFile}
               workspaceMutationId={workspaceMutationId}
