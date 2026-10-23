@@ -94,6 +94,7 @@ import {
   type ProviderInstanceId,
   type ProviderRequestKind,
   type ProviderUserInputAnswers,
+  type ProviderSessionId,
   type ProviderThreadId,
   type RunId,
   type ThreadId,
@@ -519,6 +520,18 @@ export interface ClaudeAgentSdkQuerySession {
   readonly backgroundTasks: (
     toolUseId: string,
   ) => Effect.Effect<boolean, ClaudeAgentSdkQueryRunnerError>;
+  /**
+   * Answers a question from the running session without prompting a turn.
+   * Absent on SDK versions that do not ship the control request; see
+   * `claudeAskSideQuestion` for why the method is typed by hand.
+   */
+  readonly askSideQuestion?: (
+    question: string,
+    history: ReadonlyArray<{ readonly question: string; readonly response: string }>,
+  ) => Effect.Effect<
+    ProviderAdapter.ProviderAdapterV2SideQuestionAnswer,
+    ClaudeAgentSdkQueryRunnerError
+  >;
   readonly interrupt: Effect.Effect<void, ClaudeAgentSdkQueryRunnerError>;
   readonly close: Effect.Effect<void, ClaudeAgentSdkQueryRunnerError>;
 }
@@ -634,6 +647,112 @@ export function claudeQueryMessages(queryRuntime: ClaudeQuery): AsyncIterable<SD
   return { [Symbol.asyncIterator]: () => queryRuntime };
 }
 
+interface ClaudeSideQuestionReply {
+  readonly response: string;
+  readonly synthetic?: boolean;
+}
+
+/**
+ * `askSideQuestion` ships in the SDK runtime but not in its type declarations,
+ * so the call is typed here. A `null` reply means the CLI declined to answer
+ * (it is shutting down, or the question failed validation).
+ */
+function claudeAskSideQuestion(
+  queryRuntime: ClaudeQuery,
+  question: string,
+  history: ReadonlyArray<{ readonly question: string; readonly response: string }>,
+): Promise<ProviderAdapter.ProviderAdapterV2SideQuestionAnswer> {
+  const ask = (
+    queryRuntime as unknown as {
+      askSideQuestion: (
+        question: string,
+        options?: { readonly history?: ReadonlyArray<unknown> },
+      ) => Promise<ClaudeSideQuestionReply | null>;
+    }
+  ).askSideQuestion;
+  if (typeof ask !== "function") {
+    throw new Error("This Claude Code version cannot answer side questions.");
+  }
+  return ask
+    .call(queryRuntime, question, {
+      ...(history.length === 0 ? {} : { history: [...history] }),
+    })
+    .then((reply) => {
+      if (reply === null) {
+        throw new Error("Claude did not answer the side question.");
+      }
+      return {
+        answer: reply.response,
+        ...(reply.synthetic === true ? { synthetic: true } : {}),
+      };
+    });
+}
+
+/**
+ * Answers a side question for a thread whose CLI process is gone. It resumes
+ * the same native session with tools off, asks, and closes, so the answer keeps
+ * the conversation's context without starting a turn or touching the thread.
+ */
+const askSideQuestionInResumedSession = Effect.fnUntraced(function* (input: {
+  readonly providerThread: OrchestrationV2ProviderThread;
+  readonly threadId: ThreadId;
+  readonly providerSessionId: ProviderSessionId;
+  readonly nativeThreadId: string;
+  readonly question: string;
+  readonly history: ReadonlyArray<{ readonly question: string; readonly response: string }>;
+  readonly modelSelection: ModelSelection;
+  readonly runtimePolicy: ProviderAdapter.ProviderAdapterV2RuntimePolicy;
+  readonly attachmentsDir: string;
+  readonly settings: ClaudeSettings;
+  readonly environment: NodeJS.ProcessEnv | undefined;
+  readonly queryRunner: ClaudeAgentSdkQueryRunner["Service"];
+}) {
+  const queryOptions = makeClaudeQueryOptions({
+    modelSelection: input.modelSelection,
+    nativeThreadId: input.nativeThreadId,
+    resume: true,
+    cwd: input.runtimePolicy.cwd,
+    attachmentsDir: input.attachmentsDir,
+    settings: input.settings,
+    ...(input.environment === undefined ? {} : { environment: input.environment }),
+    // A side question reads the conversation, it does not act on it.
+    tools: [],
+    permissionMode: "dontAsk",
+  });
+  const session = yield* input.queryRunner.open({
+    options: queryOptions,
+    threadId: input.threadId,
+    providerSessionId: input.providerSessionId,
+  });
+  const ask = session.askSideQuestion;
+  if (ask === undefined) {
+    yield* session.close.pipe(Effect.ignore);
+    return yield* Effect.fail(
+      new ProviderAdapter.ProviderAdapterProtocolError({
+        driver: CLAUDE_PROVIDER,
+        detail: "This Claude Code version cannot answer side questions. Update it first.",
+      }),
+    );
+  }
+
+  // The SDK reads control responses off the message stream, so it has to keep
+  // draining while the question is in flight. Nothing here is projected.
+  const answer = yield* Effect.gen(function* () {
+    yield* Effect.forkChild(session.messages.pipe(Stream.runDrain, Effect.ignore, Effect.asVoid));
+    return yield* ask(input.question, input.history).pipe(Effect.timeoutOption("90 seconds"));
+  }).pipe(Effect.ensuring(session.close.pipe(Effect.ignore, Effect.asVoid)));
+
+  if (Option.isNone(answer)) {
+    return yield* Effect.fail(
+      new ProviderAdapter.ProviderAdapterProtocolError({
+        driver: CLAUDE_PROVIDER,
+        detail: "Claude did not answer the side question in time.",
+      }),
+    );
+  }
+  return answer.value;
+});
+
 export interface ClaudeAgentSdkLoggedQueryOptions {
   readonly model: ClaudeAgentSdkQueryOptions["model"];
   readonly tools: ClaudeAgentSdkQueryOptions["tools"];
@@ -710,6 +829,17 @@ export type ClaudeAgentSdkProtocolLogEvent =
       readonly payload: {
         readonly type: "query.background_tasks";
         readonly toolUseId: string;
+      };
+    }
+  | {
+      readonly direction: "outgoing";
+      readonly stage: "decoded";
+      readonly payload: {
+        readonly type: "query.ask_side_question";
+        readonly questionLength: number;
+        readonly historyLength: number;
+        readonly answerLength: number;
+        readonly synthetic: boolean;
       };
     }
   | {
@@ -1117,6 +1247,25 @@ export const layerQueryRunner: Layer.Layer<
                   direction: "outgoing",
                   stage: "decoded",
                   payload: { type: "query.background_tasks", toolUseId },
+                }),
+              ),
+            ),
+          askSideQuestion: (question, history) =>
+            Effect.tryPromise({
+              try: () => claudeAskSideQuestion(queryRuntime, question, history),
+              catch: (cause) => queryRunnerError(cause, "askSideQuestion"),
+            }).pipe(
+              Effect.tap((answer) =>
+                logProtocolEvent({
+                  direction: "outgoing",
+                  stage: "decoded",
+                  payload: {
+                    type: "query.ask_side_question",
+                    questionLength: question.length,
+                    historyLength: history.length,
+                    answerLength: answer.answer.length,
+                    synthetic: answer.synthetic ?? false,
+                  },
                 }),
               ),
             ),
@@ -10329,6 +10478,59 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
                 cause: "Claude V2 adapter does not implement snapshots.",
               }),
             ),
+          askSideQuestion: Effect.fn("ClaudeAdapterV2.askSideQuestion")(
+            function* (sideInput) {
+              const nativeThreadId = yield* getNativeThreadId(sideInput.providerThread);
+              const live = yield* Ref.get(queryContext);
+              if (live !== null && live.nativeThreadId === nativeThreadId) {
+                if (live.query.askSideQuestion === undefined) {
+                  return yield* new ProviderAdapter.ProviderAdapterProtocolError({
+                    driver: CLAUDE_PROVIDER,
+                    detail:
+                      "This Claude Code version cannot answer side questions. Update it first.",
+                  });
+                }
+                return yield* live.query.askSideQuestion(
+                  sideInput.question,
+                  sideInput.history ?? [],
+                );
+              }
+
+              // The live process is gone (server restart, or the session went
+              // idle). Resume the same native session in a short-lived CLI with
+              // no tools, so the question still sees the conversation and the
+              // main thread's process is not touched.
+              return yield* askSideQuestionInResumedSession({
+                providerThread: sideInput.providerThread,
+                threadId: input.threadId,
+                providerSessionId: input.providerSessionId,
+                nativeThreadId,
+                question: sideInput.question,
+                history: sideInput.history ?? [],
+                modelSelection: sideInput.modelSelection ?? input.modelSelection,
+                runtimePolicy: sideInput.runtimePolicy ?? input.runtimePolicy,
+                attachmentsDir,
+                settings: adapterOptions.settings,
+                environment: adapterOptions.environment,
+                queryRunner,
+              });
+            },
+            (effect, sideInput) =>
+              effect.pipe(
+                Effect.mapError((cause) =>
+                  Schema.is(ProviderAdapter.ProviderAdapterProtocolError)(cause)
+                    ? cause
+                    : new ProviderAdapter.ProviderAdapterProtocolError({
+                        driver: CLAUDE_PROVIDER,
+                        detail:
+                          cause instanceof Error
+                            ? cause.message
+                            : "Claude could not answer the side question.",
+                        payload: cause,
+                      }),
+                ),
+              ),
+          ),
           rollbackThread: Effect.fn("ClaudeAdapterV2.rollbackThread")(
             function* (rollbackInput) {
               const currentTurn = yield* Ref.get(activeTurn);

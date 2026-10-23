@@ -135,6 +135,12 @@ import {
   threadComposerErrorsAtom,
 } from "../../state/thread-composer-error";
 import { threadEnvironment } from "../../state/threads";
+import { uuidv4 } from "../../lib/uuid";
+import {
+  ComposerSideQuestion,
+  type SideQuestionExchange,
+  type SideQuestionPanelState,
+} from "./ComposerSideQuestion";
 import { useAtomCommand } from "../../state/use-atom-command";
 import { useDelayedStatus } from "../../lib/useDelayedStatus";
 import type {
@@ -593,6 +599,9 @@ export const ThreadDetailScreen = function ThreadDetailScreen(props: ThreadDetai
   const unsettleThread = useAtomCommand(threadEnvironment.unsettle, { reportFailure: false });
   const updateMetadata = useAtomCommand(threadEnvironment.updateMetadata, { reportFailure: false });
   const visitThread = useAtomCommand(threadEnvironment.visit, { reportFailure: false });
+  const askSideQuestion = useAtomCommand(threadEnvironment.askSideQuestion, {
+    reportFailure: false,
+  });
   const [statusRequest, setStatusRequest] = useState<{ threadKey: string } | null>(null);
   const statusPending = statusRequest?.threadKey === selectedThreadKey;
   const [lifecycleNow, setLifecycleNow] = useState(() => new Date().toISOString());
@@ -854,6 +863,74 @@ export const ThreadDetailScreen = function ThreadDetailScreen(props: ThreadDetai
           },
     );
   const dismissUsageLimits = () => setUsageLimitsPanel(null);
+  // The /btw panel. Like the web one it lives only in memory, so a reload
+  // starts clean and the thread's transcript never gains anything.
+  const [sideQuestionPanel, setSideQuestionPanel] = useState<SideQuestionPanelState | null>(null);
+  if (sideQuestionPanel !== null && sideQuestionPanel.threadKey !== selectedThreadKey) {
+    setSideQuestionPanel(null);
+  }
+  const openSideQuestion = () =>
+    setSideQuestionPanel((current) =>
+      current === null || current.threadKey !== selectedThreadKey
+        ? { threadKey: selectedThreadKey, exchanges: [], pending: false, error: null }
+        : current,
+    );
+  const askSideQuestionFromPanel = async (question: string) => {
+    const threadKey = selectedThreadKey;
+    const settled = (sideQuestionPanel?.exchanges ?? []).filter(
+      (exchange): exchange is SideQuestionExchange & { answer: string } => exchange.answer !== null,
+    );
+    const askedId = uuidv4();
+    setSideQuestionPanel({
+      threadKey,
+      exchanges: [...settled, { id: askedId, question, answer: null }],
+      pending: true,
+      error: null,
+    });
+    const result = await askSideQuestion({
+      environmentId: props.environmentId,
+      input: {
+        threadId: props.selectedThread.id,
+        question,
+        ...(settled.length === 0
+          ? {}
+          : {
+              history: settled.map((exchange) => ({
+                question: exchange.question,
+                response: exchange.answer,
+              })),
+            }),
+      },
+    });
+    setSideQuestionPanel((current) => {
+      // A thread switch or a newer ask owns the panel now.
+      if (current === null || current.threadKey !== threadKey) return current;
+      const answered = current.exchanges.filter((exchange) => exchange.answer !== null);
+      if (result._tag === "Failure") {
+        const error = squashAtomCommandFailure(result);
+        return {
+          ...current,
+          pending: false,
+          exchanges: answered,
+          error: error instanceof Error ? error.message : "The side question failed.",
+        };
+      }
+      return {
+        ...current,
+        pending: false,
+        error: null,
+        exchanges: [
+          ...answered,
+          {
+            id: askedId,
+            question,
+            answer: result.value.answer,
+            ...(result.value.synthetic === true ? { synthetic: true } : {}),
+          },
+        ],
+      };
+    });
+  };
   // A send may resolve after navigating away, so only the originating
   // thread's panel is cleared; a panel opened elsewhere in the meantime stays.
   const clearUsageLimitsFor = (threadKey: string) =>
@@ -1547,6 +1624,19 @@ export const ThreadDetailScreen = function ThreadDetailScreen(props: ThreadDetai
                       />
                     </Animated.View>
                   ) : null}
+                  {sideQuestionPanel && activeUserInputRequestId === null ? (
+                    <Animated.View
+                      className="shrink-0 px-4 pb-3"
+                      entering={FadeInDown.duration(220)}
+                      exiting={FadeOut.duration(140)}
+                    >
+                      <ComposerSideQuestion
+                        state={sideQuestionPanel}
+                        onAsk={(question) => void askSideQuestionFromPanel(question)}
+                        onClose={() => setSideQuestionPanel(null)}
+                      />
+                    </Animated.View>
+                  ) : null}
                   {usageLimitsReport && activeUserInputRequestId === null ? (
                     <Animated.View
                       className="shrink-0 px-4"
@@ -1727,6 +1817,7 @@ export const ThreadDetailScreen = function ThreadDetailScreen(props: ThreadDetai
                         onResumeQueue={props.onResumeQueue}
                         onSendMessage={handleSendMessage}
                         onShowUsageLimits={showUsageLimits}
+                        onOpenSideQuestion={openSideQuestion}
                         canSwitchProvider={props.canSwitchThreadProvider}
                         onUpdateModelSelection={props.onUpdateThreadModelSelection}
                         onUpdateRuntimeMode={props.onUpdateThreadRuntimeMode}

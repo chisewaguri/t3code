@@ -45,6 +45,8 @@ import {
 import type { UsageLimitSourceSnapshots } from "@t3tools/contracts";
 import { feedbackBannerItem } from "./chat/ComposerFeedback";
 import { useUsageLimitsPanel } from "./chat/useUsageLimitsPanel";
+import { useSideQuestionPanel } from "./chat/useSideQuestionPanel";
+import { parseSideQuestionCommand } from "@t3tools/shared/sideQuestion";
 import { useWorktreeSetup } from "./chat/useWorktreeSetup";
 import { useChatShortcuts } from "./chat/useChatShortcuts";
 import { ChatBannerLane } from "./chat/ChatBannerLane";
@@ -223,7 +225,10 @@ import {
   serverEnvironment,
 } from "../state/server";
 import { threadEnvironment } from "../state/threads";
-import { resolveProviderSkillsForCwd } from "@t3tools/client-runtime/providerSkills";
+import {
+  resolveProviderSkillsForCwd,
+  resolveProviderSlashCommandsForCwd,
+} from "@t3tools/client-runtime/providerSkills";
 import { vcsEnvironment } from "../state/vcs";
 import {
   type EnvironmentPresentation,
@@ -431,6 +436,9 @@ export default function ChatView(props: ChatViewProps) {
     reportFailure: false,
   });
   const startThreadTurn = useOrchestrationCommand(threadEnvironment.startTurn, {
+    reportFailure: false,
+  });
+  const askSideQuestion = useOrchestrationCommand(threadEnvironment.askSideQuestion, {
     reportFailure: false,
   });
   const createAttachmentAssetUrl = useAtomQueryRunner(assetEnvironment.createUrl, {
@@ -1578,6 +1586,17 @@ export default function ChatView(props: ChatViewProps) {
       })
     : null;
   const gitStatusCwd = activeThread?.worktreePath ?? gitCwd;
+  const sideQuestionPanel = useSideQuestionPanel({
+    environmentId,
+    threadId: activeThread?.id ?? null,
+    threadKey: routeThreadKey,
+    providerSlashCommands:
+      activeProviderStatus === null
+        ? null
+        : resolveProviderSlashCommandsForCwd(activeProviderStatus, gitCwd),
+    cwd: gitCwd,
+    ask: askSideQuestion,
+  });
   const gitStatusQuery = useEnvironmentQuery(
     gitStatusCwd === null
       ? null
@@ -2607,12 +2626,14 @@ export default function ChatView(props: ChatViewProps) {
       (item) => item !== null,
     );
     const usageLimitsItems = usageLimitsBanner === null ? [] : [usageLimitsBanner];
+    const sideQuestionItems = sideQuestionPanel.banner === null ? [] : [sideQuestionPanel.banner];
     const projectCloneItems = projectCloneBannerItem === null ? [] : [projectCloneBannerItem];
     if (!localCheckoutBranchMismatch || !showBranchMismatchBanner || !activeBranchMismatchKey) {
       return [
         ...feedbackBannerItems,
         ...limitRecoveryItems,
         ...usageLimitsItems,
+        ...sideQuestionItems,
         ...projectCloneItems,
         ...systemComposerBannerItems,
         ...backgroundWorkItems,
@@ -2622,6 +2643,7 @@ export default function ChatView(props: ChatViewProps) {
       ...feedbackBannerItems,
       ...limitRecoveryItems,
       ...usageLimitsItems,
+      ...sideQuestionItems,
       ...projectCloneItems,
       ...systemComposerBannerItems,
       ...backgroundWorkItems,
@@ -2907,6 +2929,8 @@ export default function ChatView(props: ChatViewProps) {
     usageLimitsOffered,
     openUsageLimits,
     clearUsageLimitsFor,
+    sideQuestionOffered: sideQuestionPanel.offered,
+    askSideQuestion: sideQuestionPanel.ask,
     needsLoadBalancing,
     loadBalancing,
     readPendingEnvironmentChange,
@@ -3561,6 +3585,11 @@ export default function ChatView(props: ChatViewProps) {
                                 usageLimitsKey !== null &&
                                 !composerHasNonPromptContent
                                   ? openUsageLimits
+                                  : undefined
+                              }
+                              onSideQuestionCommand={
+                                sideQuestionPanel.offered && !composerHasNonPromptContent
+                                  ? sideQuestionPanel.open
                                   : undefined
                               }
                               environmentUnavailable={activeEnvironmentUnavailableState}

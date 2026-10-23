@@ -2148,6 +2148,26 @@ describe("ClaudeAdapterV2 background wake turns", () => {
       toolUseId: string,
     ) => Effect.Effect<boolean, ClaudeAdapterV2.ClaudeAgentSdkQueryRunnerError>;
     readonly environment?: NodeJS.ProcessEnv;
+    /** Stubs the CLI's side-question control request; omit to model an older CLI. */
+    readonly askSideQuestion?: (
+      question: string,
+      history: ReadonlyArray<{ readonly question: string; readonly response: string }>,
+    ) => Effect.Effect<{ readonly answer: string; readonly synthetic?: boolean }, never>;
+    /**
+     * Models the short-lived process the adapter opens to answer a question for
+     * a dormant session. Return `{}` to model a CLI without the control request.
+     */
+    readonly openForSideQuestion?: (
+      options: ClaudeAdapterV2.ClaudeAgentSdkQueryOptions,
+    ) => Effect.Effect<
+      {
+        readonly answer?: (
+          question: string,
+          history: ReadonlyArray<{ readonly question: string; readonly response: string }>,
+        ) => Effect.Effect<{ readonly answer: string; readonly synthetic?: boolean }, never>;
+      },
+      never
+    >;
     readonly subagentLaunchToolUseId?: string;
     readonly nativeSessionId?: string;
     readonly settings?: ClaudeSettings;
@@ -2228,6 +2248,27 @@ describe("ClaudeAdapterV2 background wake turns", () => {
           open: (input) =>
             Effect.gen(function* () {
               openedOptions = input.options;
+              // A resumed side question opens its own process: no prompt is
+              // offered and the live thread keeps the one it already has.
+              if (
+                options?.openForSideQuestion !== undefined &&
+                input.options.resume !== undefined
+              ) {
+                const stub = yield* options.openForSideQuestion(input.options);
+                const ask = stub.answer;
+                return {
+                  messages: Stream.never,
+                  offer: () => Effect.void,
+                  setModel: () => Effect.void,
+                  applyFlagSettings: () => Effect.void,
+                  setPermissionMode: () => Effect.void,
+                  backgroundTasks: () => Effect.succeed(false),
+                  stopTask: () => Effect.void,
+                  ...(ask === undefined ? {} : { askSideQuestion: ask }),
+                  interrupt: Effect.void,
+                  close: Effect.void,
+                };
+              }
               const processMessages =
                 options?.freshQueueOnReopen === true && processQueues.length > 0
                   ? yield* Queue.unbounded<SDKMessage>()
@@ -2266,6 +2307,9 @@ describe("ClaudeAdapterV2 background wake turns", () => {
                     ),
                   backgroundTasks: options?.backgroundTasks ?? (() => Effect.succeed(false)),
                   stopTask: options?.stopTask ?? (() => Effect.void),
+                  ...(options?.askSideQuestion === undefined
+                    ? {}
+                    : { askSideQuestion: options.askSideQuestion }),
                   interrupt: Effect.void,
                   close: Queue.shutdown(processMessages),
                 };
@@ -2291,6 +2335,9 @@ describe("ClaudeAdapterV2 background wake turns", () => {
                   }).pipe(Effect.andThen(() => options?.setPermissionMode?.(mode) ?? Effect.void)),
                 backgroundTasks: options?.backgroundTasks ?? (() => Effect.succeed(false)),
                 stopTask: options?.stopTask ?? (() => Effect.void),
+                ...(options?.askSideQuestion === undefined
+                  ? {}
+                  : { askSideQuestion: options.askSideQuestion }),
                 interrupt: options?.interrupt ?? Effect.void,
                 close: options?.close?.(sdkMessages) ?? Effect.void,
               };
@@ -2382,6 +2429,143 @@ describe("ClaudeAdapterV2 background wake turns", () => {
       };
     });
   const makeWakeHarness = makeWakeHarnessWithOptions();
+
+  it.effect("answers a side question from the live session without prompting a turn", () =>
+    Effect.gen(function* () {
+      const calls: Array<{
+        question: string;
+        history: ReadonlyArray<{ readonly question: string; readonly response: string }>;
+      }> = [];
+      const harness = yield* makeWakeHarnessWithOptions({
+        askSideQuestion: (question, history) =>
+          Effect.sync(() => {
+            calls.push({ question, history });
+            return { answer: "It parses the flag before reading the file." };
+          }),
+      });
+      yield* harness.runtime.startTurn(
+        makeClaudeTestTurnInput({
+          threadId: harness.threadId,
+          providerThread: harness.providerThread,
+          now: yield* DateTime.now,
+          attemptId: RunAttemptId.make("side-question"),
+          text: "Refactor the parser",
+          attachments: [],
+        }),
+      );
+      const offeredBefore = harness.offeredMessages.length;
+
+      const answer = yield* harness.runtime.askSideQuestion!({
+        providerThread: harness.providerThread,
+        question: "Where does the flag get parsed?",
+      });
+
+      assert.deepEqual(answer, { answer: "It parses the flag before reading the file." });
+      assert.deepEqual(calls, [{ question: "Where does the flag get parsed?", history: [] }]);
+      // The transcript is untouched: no prompt was offered and no turn item appeared.
+      assert.equal(harness.offeredMessages.length, offeredBefore);
+    }).pipe(
+      Effect.provide(
+        Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+      ),
+    ),
+  );
+
+  it.effect("replays earlier side questions and reports a synthetic reply", () =>
+    Effect.gen(function* () {
+      const harness = yield* makeWakeHarnessWithOptions({
+        askSideQuestion: (_question, history) =>
+          Effect.succeed({ answer: `${history.length} earlier questions`, synthetic: true }),
+      });
+      yield* harness.runtime.startTurn(
+        makeClaudeTestTurnInput({
+          threadId: harness.threadId,
+          providerThread: harness.providerThread,
+          now: yield* DateTime.now,
+          attemptId: RunAttemptId.make("side-question-history"),
+          text: "Refactor the parser",
+          attachments: [],
+        }),
+      );
+
+      const answer = yield* harness.runtime.askSideQuestion!({
+        providerThread: harness.providerThread,
+        question: "And the second one?",
+        history: [{ question: "First?", response: "First answer." }],
+      });
+
+      assert.deepEqual(answer, { answer: "1 earlier questions", synthetic: true });
+    }).pipe(
+      Effect.provide(
+        Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+      ),
+    ),
+  );
+
+  it.effect("resumes a dormant session in its own process to answer", () =>
+    Effect.gen(function* () {
+      let openedWith:
+        | { resume: string | undefined; tools: unknown; permissionMode: string | undefined }
+        | undefined;
+      let askedInResumed = 0;
+      const harness = yield* makeWakeHarnessWithOptions({
+        openForSideQuestion: (options) =>
+          Effect.sync(() => {
+            openedWith = {
+              resume: options.resume,
+              tools: options.tools,
+              permissionMode: options.permissionMode,
+            };
+            return {
+              answer: () =>
+                Effect.sync(() => {
+                  askedInResumed += 1;
+                  return { answer: "resumed answer" };
+                }),
+            };
+          }),
+      });
+      // No turn has run, so the session has no live CLI process.
+      const answer = yield* harness.runtime.askSideQuestion!({
+        providerThread: harness.providerThread,
+        question: "Anything?",
+      });
+
+      assert.deepEqual(answer, { answer: "resumed answer" });
+      assert.equal(askedInResumed, 1);
+      // It resumes the thread's own native session, with no tools, and never
+      // prompts the thread.
+      assert.equal(openedWith?.resume, WAKE_NATIVE_SESSION);
+      assert.deepEqual(openedWith?.tools, []);
+      assert.equal(openedWith?.permissionMode, "dontAsk");
+      assert.equal(harness.offeredMessages.length, 0);
+    }).pipe(
+      Effect.provide(
+        Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+      ),
+    ),
+  );
+
+  it.effect("says so when the resumed process cannot answer side questions", () =>
+    Effect.gen(function* () {
+      const harness = yield* makeWakeHarnessWithOptions({
+        openForSideQuestion: () => Effect.succeed({}),
+      });
+      const error = yield* harness.runtime.askSideQuestion!({
+        providerThread: harness.providerThread,
+        question: "Anything?",
+      }).pipe(Effect.flip);
+
+      assert.equal(
+        error._tag === "ProviderAdapterProtocolError" ? error.detail : error._tag,
+        "This Claude Code version cannot answer side questions. Update it first.",
+      );
+    }).pipe(
+      Effect.provide(
+        Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+      ),
+    ),
+  );
 
   describe("Claude settings restrictions", () => {
     it.effect("resolves cached managed policy from the configured home through the real SDK", () =>

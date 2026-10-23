@@ -243,6 +243,14 @@ provider supports it. Web and desktop also offer compaction from the context met
 Claude instances can also compact idle threads for you. See
 [compact long conversations](./providers-claude.md#compact-long-conversations).
 
+Send `/btw` followed by a question, or pick it from the slash menu, to ask
+something without adding it to the conversation. With Claude, the answer comes
+from the thread's own session, so it already knows what you have been working on.
+If that session is not running, T3 resumes it for the question alone. The panel
+above the composer keeps your follow-up questions and their answers, and closes
+when you dismiss it or switch threads. Nothing is saved: the thread's transcript
+and its context stay as they were. Web, desktop, and mobile all have the panel.
+
 ## Goals
 
 With Codex and Claude, send `/goal` followed by what "done" means, for example

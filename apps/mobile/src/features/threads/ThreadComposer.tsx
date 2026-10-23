@@ -22,6 +22,8 @@ import {
   type ServerConfig as T3ServerConfig,
   type UsageLimitsReport,
 } from "@t3tools/contracts";
+import { SIDE_QUESTION_COMMAND } from "@t3tools/shared/sideQuestion";
+import { resolveProviderSlashCommandsForCwd } from "@t3tools/client-runtime/providerSkills";
 import {
   collectProviderUsageLimits,
   hasProviderUsageLimits,
@@ -273,6 +275,8 @@ export interface ThreadComposerProps {
     stillSendable?: () => boolean,
   ) => Promise<MessageId | null>;
   readonly onShowUsageLimits: (report: UsageLimitsReport | null) => void;
+  /** `/btw` opens the host's side-question panel; the question is asked there. */
+  readonly onOpenSideQuestion: () => void;
   readonly canSwitchProvider: boolean;
   readonly onUpdateModelSelection: (modelSelection: ModelSelection) => void;
   readonly onUpdateRuntimeMode: (runtimeMode: RuntimeMode) => void;
@@ -534,7 +538,14 @@ export const ThreadComposer = function ThreadComposer(props: ThreadComposerProps
       draftKey: composerDraftKey,
     });
   };
-  const { onSendMessage, onChangeDraftMessage, onShowUsageLimits } = props;
+  const { onSendMessage, onChangeDraftMessage, onShowUsageLimits, onOpenSideQuestion } = props;
+  // The /btw panel needs a thread composer to show it, and the provider must
+  // advertise the command, which Claude does.
+  const sideQuestionOffered =
+    selectedProviderStatus !== null &&
+    resolveProviderSlashCommandsForCwd(selectedProviderStatus, props.projectCwd).some(
+      (command) => command.name === SIDE_QUESTION_COMMAND.name,
+    );
   const usageLimitsOffered =
     selectedProviderStatus !== null &&
     hasProviderUsageLimits(
@@ -579,6 +590,8 @@ export const ThreadComposer = function ThreadComposer(props: ThreadComposerProps
     offersUsageLimits: usageLimitsOffered,
     onUsageLimits:
       usageLimitsOffered && draftAttachments.length === 0 ? openUsageLimits : undefined,
+    offersSideQuestion: sideQuestionOffered && draftAttachments.length === 0,
+    onSideQuestion: sideQuestionOffered ? props.onOpenSideQuestion : undefined,
   });
   const voiceInput = useVoiceInputController({
     ownerKey: composerDraftKey,

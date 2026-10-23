@@ -24,6 +24,7 @@ import {
   setComposerDraftContext,
 } from "../../state/use-composer-drafts";
 import { USAGE_LIMITS_COMMAND } from "@t3tools/shared/usageLimits";
+import { SIDE_QUESTION_COMMAND } from "@t3tools/shared/sideQuestion";
 import {
   detectComposerTrigger,
   replaceTextRange,
@@ -66,6 +67,8 @@ export function buildComposerSlashCommandItems(input: {
   readonly hasThread: boolean;
   readonly hasCompactableConversation?: boolean;
   readonly offersUsageLimits?: boolean;
+  /** Whether this composer can show the /btw panel. */
+  readonly offersSideQuestion?: boolean;
   readonly allowInteractionMode: boolean;
   readonly selectedProviderStatus: Pick<
     ServerProvider,
@@ -108,6 +111,8 @@ export function buildComposerSlashCommandItems(input: {
   for (const command of input.selectedProviderStatus?.slashCommands ?? []) {
     if (!command.name.toLowerCase().includes(query)) continue;
     if (command.name === "compact" && !input.hasCompactableConversation) continue;
+    // Offered only where a thread composer can show the panel.
+    if (command.name === SIDE_QUESTION_COMMAND.name && !input.offersSideQuestion) continue;
     if (command.name === USAGE_LIMITS_COMMAND.name && input.offersUsageLimits && !input.hasThread) {
       continue;
     }
@@ -181,10 +186,12 @@ export function useComposerCommandMenu({
   hasThread,
   hasCompactableConversation,
   offersUsageLimits = false,
+  offersSideQuestion = false,
   enabled = true,
   onChangeDraftMessage,
   onUpdateInteractionMode,
   onUsageLimits,
+  onSideQuestion,
 }: {
   readonly draftMessage: string;
   readonly ownerKey: string | null;
@@ -199,10 +206,14 @@ export function useComposerCommandMenu({
   readonly hasThread: boolean;
   readonly hasCompactableConversation: boolean;
   readonly offersUsageLimits?: boolean;
+  /** Whether this composer can show the /btw panel. */
+  readonly offersSideQuestion?: boolean;
   readonly enabled?: boolean;
   readonly onChangeDraftMessage: (value: string) => void;
   readonly onUpdateInteractionMode?: (mode: ProviderInteractionMode) => void;
   readonly onUsageLimits?: () => void;
+  /** Picking /btw opens the panel; the question is asked there. */
+  readonly onSideQuestion?: () => void;
 }) {
   const [selection, setSelection] = useState(() => composerSelectionAtEnd(draftMessage));
   const previousOwnerKeyRef = useRef(ownerKey);
@@ -385,6 +396,7 @@ export function useComposerCommandMenu({
         hasThread,
         hasCompactableConversation,
         offersUsageLimits,
+        offersSideQuestion,
         allowInteractionMode: onUpdateInteractionMode !== undefined,
         selectedProviderStatus: selectedProviderStatus
           ? {

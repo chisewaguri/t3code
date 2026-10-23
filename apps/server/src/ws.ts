@@ -74,6 +74,7 @@ import {
   ProjectSearchEntriesError,
   ProjectWriteFileError,
   ProjectMutationError,
+  ProviderAskSideQuestionError,
   ProviderUploadFeedbackError,
   ProviderSetupError,
   RelayClientInstallFailedError,
@@ -262,6 +263,7 @@ import * as UsageLimitSources from "./usage/UsageLimitSources.ts";
 
 const CONFIG_DISCOVERY_TIMEOUT = Duration.seconds(5);
 const isProviderUploadFeedbackError = Schema.is(ProviderUploadFeedbackError);
+const isProviderAskSideQuestionError = Schema.is(ProviderAskSideQuestionError);
 
 const resolveDiscoveryForConfig = <A, E, R>(
   discovery: Effect.Effect<A, E, R>,
@@ -2352,6 +2354,89 @@ export const layerWsRpc = (
                     ? cause
                     : new ProviderUploadFeedbackError({
                         threadId: input.threadId,
+                        cause,
+                      }),
+                ),
+              ),
+          ),
+        [WS_METHODS.providerAskSideQuestion]:
+          /* Request instrumentation already owns the span; keep this helper in that context. */
+          Effect.fnUntraced(
+            function* (input) {
+              const projection = yield* threadManagement.getThreadRecords(input.threadId, [
+                "providerThreads",
+                "providerSessions",
+              ]);
+              const providerThread =
+                projection.providerThreads.find(
+                  (candidate) => candidate.id === projection.thread.activeProviderThreadId,
+                ) ?? projection.providerThreads.at(-1);
+              const providerSessionId = providerThread?.providerSessionId ?? null;
+              if (providerThread === undefined || providerSessionId === null) {
+                return yield* Effect.fail(
+                  new ProviderAskSideQuestionError({
+                    threadId: input.threadId,
+                    detail: "Send a message in this thread first, then ask again.",
+                  }),
+                );
+              }
+              // A dormant session has no live runtime, but the thread's native
+              // session is still on disk, so reopen it the way the next turn
+              // would. The adapter then resumes it for the question alone.
+              // RuntimePolicyV2 resolves to the thread's own fields, which is
+              // what the CLI surfaces have on hand here.
+              const sideQuestionRuntimePolicy = {
+                runtimeMode: projection.thread.runtimeMode,
+                interactionMode: projection.thread.interactionMode,
+                cwd: projection.thread.worktreePath,
+              };
+              const live = Option.getOrNull(yield* providerSessionsV2.get(providerSessionId));
+              const existingSession = projection.providerSessions.find(
+                (candidate) => candidate.id === providerSessionId,
+              );
+              const runtime =
+                live ??
+                (yield* providerSessionsV2.open({
+                  threadId: projection.thread.id,
+                  providerSessionId,
+                  modelSelection: projection.thread.modelSelection,
+                  runtimePolicy: sideQuestionRuntimePolicy,
+                  ...(existingSession === undefined ? {} : { resumeFromSession: existingSession }),
+                  ...(providerThread.nativeThreadRef?.nativeId == null
+                    ? {}
+                    : { initialNativeThreadId: providerThread.nativeThreadRef.nativeId }),
+                }));
+              if (runtime.askSideQuestion === undefined) {
+                return yield* Effect.fail(
+                  new ProviderAskSideQuestionError({
+                    threadId: input.threadId,
+                    detail: `${runtime.driver} cannot answer side questions.`,
+                  }),
+                );
+              }
+              const answer = yield* runtime.askSideQuestion({
+                providerThread,
+                question: input.question,
+                ...(input.history === undefined ? {} : { history: input.history }),
+                modelSelection: projection.thread.modelSelection,
+                runtimePolicy: sideQuestionRuntimePolicy,
+              });
+              return {
+                answer: answer.answer,
+                ...(answer.synthetic === true ? { synthetic: true } : {}),
+              };
+            },
+            (effect, input) =>
+              effect.pipe(
+                Effect.mapError((cause) =>
+                  isProviderAskSideQuestionError(cause)
+                    ? cause
+                    : new ProviderAskSideQuestionError({
+                        threadId: input.threadId,
+                        detail:
+                          cause instanceof Error
+                            ? cause.message
+                            : "The side question could not be answered.",
                         cause,
                       }),
                 ),
