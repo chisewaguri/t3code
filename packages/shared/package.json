@@ -359,6 +359,10 @@
       "types": "./src/usageLimits.ts",
       "import": "./src/usageLimits.ts"
     },
+    "./sideQuestion": {
+      "types": "./src/sideQuestion.ts",
+      "import": "./src/sideQuestion.ts"
+    },
     "./desktopAppControl": {
       "types": "./src/desktopAppControl.ts",
       "import": "./src/desktopAppControl.ts"

@@ -14,6 +14,7 @@ import {
   filterComposerPullRequestMatches,
 } from "@t3tools/shared/composerPullRequestMatches";
 import { formatProviderSkillDisplayName } from "@t3tools/shared/inlineSkills";
+import { SIDE_QUESTION_COMMAND } from "@t3tools/shared/sideQuestion";
 
 import type { ComposerTrigger } from "../../composer-logic";
 import { basenameOfPath } from "../../pierre-icons";
@@ -56,6 +57,7 @@ export function useComposerMenuItems({
   threadPullRequests,
   planModeUiEnabled,
   compactSlashCommandAvailable,
+  sideQuestionCommandAvailable,
   selectedProvider,
   selectedProviderSkills,
   selectedProviderSlashCommands,
@@ -70,6 +72,8 @@ export function useComposerMenuItems({
   readonly threadPullRequests: ReadonlyArray<ThreadPullRequestLink> | undefined;
   readonly planModeUiEnabled: boolean;
   readonly compactSlashCommandAvailable: boolean;
+  /** Whether picking /btw opens the panel instead of inserting prompt text. */
+  readonly sideQuestionCommandAvailable: boolean;
   readonly selectedProvider: ProviderDriverKind;
   readonly selectedProviderSkills: ServerProvider["skills"];
   readonly selectedProviderSlashCommands: ServerProvider["slashCommands"];
@@ -211,7 +215,12 @@ export function useComposerMenuItems({
         showSkillsInSlashMenu,
       );
       const providerSlashCommandItems = getProviderSlashCommandsForSlashMenu(
-        selectedProviderSlashCommands,
+        [
+          ...(selectedProviderSlashCommands ?? []).filter(
+            (command) => command.name !== SIDE_QUESTION_COMMAND.name,
+          ),
+          ...(sideQuestionCommandAvailable ? [SIDE_QUESTION_COMMAND] : []),
+        ],
         slashMenuSkills,
       ).map((command) => ({
         id: `provider-slash-command:${selectedProvider}:${command.name}`,
