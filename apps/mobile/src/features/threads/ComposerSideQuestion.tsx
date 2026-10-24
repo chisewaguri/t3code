@@ -1,23 +1,16 @@
-import { useState } from "react";
-import { ActivityIndicator, Pressable, ScrollView, TextInput, View } from "react-native";
+import { useEffect, useRef, useState } from "react";
+import {
+  ActivityIndicator,
+  Pressable,
+  ScrollView,
+  TextInput,
+  View,
+  type TextInputInstance,
+} from "react-native";
 
 import { SymbolView } from "../../components/ui/AppSymbol";
 import { AppText as Text } from "../../components/ui/AppText";
-
-export interface SideQuestionExchange {
-  /** Stable per ask, so two identical questions still key apart. */
-  readonly id: string;
-  readonly question: string;
-  readonly answer: string | null;
-  readonly synthetic?: boolean;
-}
-
-export interface SideQuestionPanelState {
-  readonly threadKey: string;
-  readonly exchanges: ReadonlyArray<SideQuestionExchange>;
-  readonly pending: boolean;
-  readonly error: string | null;
-}
+import type { SideQuestionPanelState } from "./sideQuestionPanel";
 
 /**
  * The /btw result, docked above the composer. It mirrors the web panel: the
@@ -29,15 +22,18 @@ export function ComposerSideQuestion({
   onClose,
 }: {
   readonly state: SideQuestionPanelState;
-  readonly onAsk: (question: string) => void;
+  readonly onAsk: (question: string) => boolean;
   readonly onClose: () => void;
 }) {
   const [draft, setDraft] = useState("");
+  const inputRef = useRef<TextInputInstance>(null);
+  useEffect(() => {
+    if (!state.pending || state.focusKey > 0) inputRef.current?.focus();
+  }, [state.pending, state.focusKey]);
   const submit = () => {
     const question = draft.trim();
     if (question.length === 0 || state.pending) return;
-    setDraft("");
-    onAsk(question);
+    if (onAsk(question)) setDraft("");
   };
   return (
     <View className="overflow-hidden rounded-[20px] border-continuous bg-card">
@@ -60,17 +56,24 @@ export function ComposerSideQuestion({
           />
         </Pressable>
       </View>
-      <ScrollView bounces={false} className="max-h-72" contentContainerClassName="gap-3 px-4 pb-2">
+      <ScrollView
+        bounces={false}
+        keyboardShouldPersistTaps="handled"
+        className="max-h-72"
+        contentContainerClassName="gap-3 px-4 pb-2"
+      >
         <Text className="text-xs text-muted-foreground">Answers here stay out of the thread.</Text>
         {state.exchanges.map((exchange) => (
           <View key={exchange.id} className="gap-1">
             <Text className="text-xs font-medium text-foreground">{exchange.question}</Text>
-            {exchange.answer === null ? (
+            {exchange.answer === null &&
+            state.pending &&
+            exchange.id === state.exchanges.at(-1)?.id ? (
               <View className="flex-row items-center gap-2">
                 <ActivityIndicator size="small" />
                 <Text className="text-xs text-muted-foreground">Thinking…</Text>
               </View>
-            ) : (
+            ) : exchange.answer !== null ? (
               <View>
                 <Text className="text-sm text-foreground" selectable>
                   {exchange.answer}
@@ -81,7 +84,7 @@ export function ComposerSideQuestion({
                   </Text>
                 ) : null}
               </View>
-            )}
+            ) : null}
           </View>
         ))}
         {state.error === null ? null : (
@@ -90,6 +93,8 @@ export function ComposerSideQuestion({
       </ScrollView>
       <View className="flex-row items-center gap-2 border-t border-separator px-4 py-2">
         <TextInput
+          ref={inputRef}
+          autoFocus={!state.pending}
           accessibilityLabel="Side question"
           className="min-w-0 flex-1 text-sm text-foreground"
           placeholder="Ask a side question"
@@ -97,7 +102,6 @@ export function ComposerSideQuestion({
           value={draft}
           onChangeText={setDraft}
           onSubmitEditing={submit}
-          editable={!state.pending}
           returnKeyType="send"
         />
         <Pressable
@@ -107,7 +111,9 @@ export function ComposerSideQuestion({
           onPress={submit}
           className="rounded-full bg-primary px-3 py-1.5 active:opacity-70 disabled:opacity-40"
         >
-          <Text className="text-xs font-medium text-primary-foreground">Ask</Text>
+          <Text className="text-xs font-medium text-primary-foreground">
+            {state.pending ? "Asking…" : "Ask"}
+          </Text>
         </Pressable>
       </View>
     </View>

@@ -212,8 +212,8 @@ export function useComposerCommandMenu({
   readonly onChangeDraftMessage: (value: string) => void;
   readonly onUpdateInteractionMode?: (mode: ProviderInteractionMode) => void;
   readonly onUsageLimits?: () => void;
-  /** Picking /btw opens the panel; the question is asked there. */
-  readonly onSideQuestion?: () => void;
+  /** An empty question opens the panel without making a request. */
+  readonly onSideQuestion?: (question: string) => boolean;
 }) {
   const [selection, setSelection] = useState(() => composerSelectionAtEnd(draftMessage));
   const previousOwnerKeyRef = useRef(ownerKey);
@@ -607,6 +607,20 @@ export function useComposerCommandMenu({
       setSelection({ start: cleared.cursor, end: cleared.cursor });
       onChangeDraftMessage(cleared.text);
       onUsageLimits();
+      return;
+    }
+
+    if (
+      item.type === "provider-slash-command" &&
+      item.command.name === SIDE_QUESTION_COMMAND.name &&
+      offersSideQuestion &&
+      onSideQuestion
+    ) {
+      const cleared = replaceTextRange(draftMessage, trigger.rangeStart, trigger.rangeEnd, "");
+      if (onSideQuestion(cleared.text.trim())) {
+        setSelection({ start: 0, end: 0 });
+        onChangeDraftMessage("");
+      }
       return;
     }
 

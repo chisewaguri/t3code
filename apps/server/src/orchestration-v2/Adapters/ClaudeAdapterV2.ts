@@ -709,10 +709,12 @@ const askSideQuestionInResumedSession = Effect.fnUntraced(function* (input: {
   readonly environment: NodeJS.ProcessEnv | undefined;
   readonly queryRunner: ClaudeAgentSdkQueryRunner["Service"];
 }) {
+  const resumeSessionAt = yield* getNativeConversationHeadId(input.providerThread);
   const queryOptions = makeClaudeQueryOptions({
     modelSelection: input.modelSelection,
     nativeThreadId: input.nativeThreadId,
     resume: true,
+    ...(resumeSessionAt === undefined ? {} : { resumeSessionAt }),
     cwd: input.runtimePolicy.cwd,
     attachmentsDir: input.attachmentsDir,
     settings: input.settings,
@@ -721,38 +723,33 @@ const askSideQuestionInResumedSession = Effect.fnUntraced(function* (input: {
     tools: [],
     permissionMode: "dontAsk",
   });
-  const session = yield* input.queryRunner.open({
-    options: queryOptions,
-    threadId: input.threadId,
-    providerSessionId: input.providerSessionId,
-  });
-  const ask = session.askSideQuestion;
-  if (ask === undefined) {
-    yield* session.close.pipe(Effect.ignore);
-    return yield* Effect.fail(
-      new ProviderAdapter.ProviderAdapterProtocolError({
-        driver: CLAUDE_PROVIDER,
-        detail: "This Claude Code version cannot answer side questions. Update it first.",
-      }),
-    );
-  }
+  return yield* Effect.acquireUseRelease(
+    input.queryRunner.open({
+      options: queryOptions,
+      threadId: input.threadId,
+      providerSessionId: input.providerSessionId,
+    }),
+    (session) =>
+      Effect.gen(function* () {
+        const ask = session.askSideQuestion;
+        if (ask === undefined) {
+          return yield* Effect.fail(
+            new ProviderAdapter.ProviderAdapterProtocolError({
+              driver: CLAUDE_PROVIDER,
+              detail: "This Claude Code version cannot answer side questions. Update it first.",
+            }),
+          );
+        }
 
-  // The SDK reads control responses off the message stream, so it has to keep
-  // draining while the question is in flight. Nothing here is projected.
-  const answer = yield* Effect.gen(function* () {
-    yield* Effect.forkChild(session.messages.pipe(Stream.runDrain, Effect.ignore, Effect.asVoid));
-    return yield* ask(input.question, input.history).pipe(Effect.timeoutOption("90 seconds"));
-  }).pipe(Effect.ensuring(session.close.pipe(Effect.ignore, Effect.asVoid)));
-
-  if (Option.isNone(answer)) {
-    return yield* Effect.fail(
-      new ProviderAdapter.ProviderAdapterProtocolError({
-        driver: CLAUDE_PROVIDER,
-        detail: "Claude did not answer the side question in time.",
+        // The SDK reads control responses off the message stream, so it has to keep
+        // draining while the question is in flight. Nothing here is projected.
+        yield* Effect.forkChild(
+          session.messages.pipe(Stream.runDrain, Effect.ignore, Effect.asVoid),
+        );
+        return yield* ask(input.question, input.history);
       }),
-    );
-  }
-  return answer.value;
+    (session) => session.close.pipe(Effect.ignore, Effect.asVoid),
+  );
 });
 
 export interface ClaudeAgentSdkLoggedQueryOptions {
@@ -10583,6 +10580,16 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
             },
             (effect, sideInput) =>
               effect.pipe(
+                Effect.timeoutOrElse({
+                  duration: "90 seconds",
+                  orElse: () =>
+                    Effect.fail(
+                      new ProviderAdapter.ProviderAdapterProtocolError({
+                        driver: CLAUDE_PROVIDER,
+                        detail: "Claude did not answer the side question in time.",
+                      }),
+                    ),
+                }),
                 Effect.mapError((cause) =>
                   Schema.is(ProviderAdapter.ProviderAdapterProtocolError)(cause)
                     ? cause

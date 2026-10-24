@@ -1,138 +1,105 @@
-import type { EnvironmentId, ServerProvider, ThreadId } from "@t3tools/contracts";
+import type {
+  EnvironmentId,
+  ProviderAskSideQuestionInput,
+  ProviderAskSideQuestionResult,
+  ServerProvider,
+  ThreadId,
+} from "@t3tools/contracts";
 import { SIDE_QUESTION_COMMAND } from "@t3tools/shared/sideQuestion";
-import { useState } from "react";
+import { useLayoutEffect, useRef, useState } from "react";
 import { useStableCallback } from "../../hooks/useStableCallback";
-import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
-import type * as Cause from "effect/Cause";
-import { newMessageId } from "~/lib/utils";
 import {
-  sideQuestionBannerItem,
-  type SideQuestionExchange,
-  type SideQuestionPanelState,
-} from "./ComposerSideQuestion";
+  squashAtomCommandFailure,
+  type AtomCommandResult,
+} from "@t3tools/client-runtime/state/runtime";
+import { newMessageId } from "~/lib/utils";
+import type { SideQuestionPanelState } from "./ComposerSideQuestion";
 
-/**
- * The /btw panel for one thread: a question answered outside the transcript.
- * It closes on a thread change and keeps its exchanges in memory only, so a
- * reload starts clean, the way the CLI's own side question does.
- */
 export function useSideQuestionPanel(input: {
   readonly environmentId: EnvironmentId;
   readonly threadId: ThreadId | null;
   readonly threadKey: string;
   readonly providerSlashCommands: ServerProvider["slashCommands"] | null;
-  readonly cwd: string | null;
   readonly ask: (input: {
     readonly environmentId: EnvironmentId;
-    readonly input: {
-      readonly threadId: ThreadId;
-      readonly question: string;
-      readonly history?: ReadonlyArray<{ readonly question: string; readonly response: string }>;
-    };
-  }) => Promise<
-    | {
-        readonly _tag: "Success";
-        readonly value: { readonly answer: string; readonly synthetic?: boolean };
-      }
-    | { readonly _tag: "Failure"; readonly cause: Cause.Cause<unknown> }
-  >;
+    readonly input: ProviderAskSideQuestionInput;
+  }) => Promise<AtomCommandResult<ProviderAskSideQuestionResult, unknown>>;
 }) {
-  const { environmentId, threadId, threadKey, providerSlashCommands, cwd, ask } = input;
+  const { environmentId, threadId, threadKey, providerSlashCommands, ask } = input;
   const [panel, setPanel] = useState<SideQuestionPanelState | null>(null);
+  const requestRef = useRef<{ threadKey: string; id: string } | null>(null);
+  useLayoutEffect(() => {
+    if (requestRef.current?.threadKey !== threadKey) requestRef.current = null;
+  }, [threadKey]);
   if (panel !== null && panel.threadKey !== threadKey) {
     setPanel(null);
   }
   const offered =
-    providerSlashCommands !== null &&
-    providerSlashCommands.some((command) => command.name === SIDE_QUESTION_COMMAND.name);
+    threadId !== null &&
+    providerSlashCommands?.some((command) => command.name === SIDE_QUESTION_COMMAND.name) === true;
 
-  const open = useStableCallback(() =>
-    setPanel((current) =>
-      current === null || current.threadKey !== threadKey
-        ? { threadKey, exchanges: [], pending: false, error: null }
-        : current,
-    ),
-  );
-
-  const askFromPanel = useStableCallback(async (question: string) => {
+  const dismiss = useStableCallback(() => {
+    requestRef.current = null;
+    setPanel(null);
+  });
+  const askFromPanel = useStableCallback((question: string) => {
+    if (!offered || threadId === null) return false;
     const asked = question.trim();
-    if (threadId === null) return;
-    if (asked.length === 0) {
-      // Picked from the menu with nothing typed yet: open and wait.
-      setPanel((current) =>
-        current === null || current.threadKey !== threadKey
-          ? { threadKey, exchanges: [], pending: false, error: null }
-          : current,
-      );
-      return;
+    if (!asked) {
+      const focusKey = newMessageId();
+      setPanel((current) => ({
+        threadKey,
+        exchanges: [],
+        requestId: null,
+        error: null,
+        ...(current?.threadKey === threadKey ? current : {}),
+        focusKey,
+      }));
+      return true;
     }
+    if (requestRef.current !== null) return false;
     const settled = (panel?.exchanges ?? []).filter(
-      (exchange): exchange is SideQuestionExchange & { answer: string } => exchange.answer !== null,
+      (exchange): exchange is typeof exchange & { answer: string } => exchange.answer !== null,
     );
-    const askedId = newMessageId();
+    const requestId = newMessageId();
+    requestRef.current = { threadKey, id: requestId };
     setPanel({
       threadKey,
-      exchanges: [...settled, { id: askedId, question: asked, answer: null }],
-      pending: true,
+      focusKey: requestId,
+      exchanges: [...settled, { id: requestId, question: asked, answer: null }],
+      requestId,
       error: null,
     });
-    const result = await ask({
+    void ask({
       environmentId,
       input: {
         threadId,
         question: asked,
-        ...(settled.length === 0
-          ? {}
-          : {
-              history: settled.map((exchange) => ({
-                question: exchange.question,
-                response: exchange.answer,
-              })),
-            }),
+        history: settled.map((exchange) => ({
+          question: exchange.question,
+          response: exchange.answer,
+        })),
       },
-    });
-    setPanel((current) => {
-      // A thread switch or a newer ask owns the panel now.
-      if (current === null || current.threadKey !== threadKey) return current;
-      const answered = current.exchanges.filter((exchange) => exchange.answer !== null);
-      if (result._tag === "Failure") {
-        const error = squashAtomCommandFailure(result);
+    }).then((result) => {
+      if (requestRef.current?.id === requestId) requestRef.current = null;
+      setPanel((current) => {
+        if (current?.requestId !== requestId) return current;
+        if (result._tag === "Failure") {
+          const error = squashAtomCommandFailure(result);
+          return {
+            ...current,
+            requestId: null,
+            error: error instanceof Error ? error.message : "The side question failed.",
+          };
+        }
         return {
           ...current,
-          pending: false,
-          exchanges: answered,
-          error: error instanceof Error ? error.message : "The side question failed.",
+          requestId: null,
+          exchanges: [...settled, { id: requestId, question: asked, ...result.value }],
         };
-      }
-      return {
-        ...current,
-        pending: false,
-        error: null,
-        exchanges: [
-          ...answered,
-          {
-            id: askedId,
-            question: asked,
-            answer: result.value.answer,
-            ...(result.value.synthetic === true ? { synthetic: true } : {}),
-          },
-        ],
-      };
+      });
     });
+    return true;
   });
-
-  const banner =
-    panel === null
-      ? null
-      : sideQuestionBannerItem({
-          // One id per thread keeps the panel open across exchanges; dismissing closes it.
-          id: `side-question:${panel.threadKey}`,
-          state: panel,
-          environmentId,
-          cwd: cwd ?? undefined,
-          onAsk: (question) => void askFromPanel(question),
-          onDismiss: () => setPanel(null),
-        });
-
-  return { banner, offered, open, ask: askFromPanel };
+  return { panel, offered, ask: askFromPanel, dismiss };
 }

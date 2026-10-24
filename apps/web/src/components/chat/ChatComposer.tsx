@@ -46,7 +46,7 @@ import { folderDropTarget, resolveDroppedFolderPath } from "./folderDrop";
 import { splitTransferredFiles } from "./workspaceFileDrop";
 import { createModelSelection, normalizeModelSlug } from "@t3tools/shared/model";
 import { USAGE_LIMITS_COMMAND } from "@t3tools/shared/usageLimits";
-import { SIDE_QUESTION_COMMAND } from "@t3tools/shared/sideQuestion";
+import { SIDE_QUESTION_COMMAND, parseSideQuestionCommand } from "@t3tools/shared/sideQuestion";
 import {
   memo,
   type ReactNode,
@@ -406,7 +406,7 @@ export interface ChatComposerProps {
   onToggleKeepFullHistory: () => void;
   onUsageLimitsCommand?: (() => void) | undefined;
   /** Runs a standalone `/btw <question>`; the question never becomes a turn. */
-  onSideQuestionCommand?: ((question: string) => void) | undefined;
+  onSideQuestionCommand?: ((question: string) => boolean) | undefined;
   environmentUnavailable: {
     readonly label: string;
     readonly connection: EnvironmentConnectionPresentation;
@@ -1981,15 +1981,16 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
         return;
       }
       if (item.command.name === SIDE_QUESTION_COMMAND.name && onSideQuestionCommand) {
-        // Opening the panel is the action; a question typed after the command
-        // stays in the draft, so only the command itself is consumed here.
-        const applied = applyPromptReplacement(trigger.rangeStart, trigger.rangeEnd, "", {
-          expectedText: snapshot.value.slice(trigger.rangeStart, trigger.rangeEnd),
+        const question = parseSideQuestionCommand(snapshot.value);
+        if (!onSideQuestionCommand(question ?? "")) return;
+        const start = question === null ? trigger.rangeStart : 0;
+        const end = question === null ? trigger.rangeEnd : snapshot.value.length;
+        const applied = applyPromptReplacement(start, end, "", {
+          expectedText: snapshot.value.slice(start, end),
           focusEditorAfterReplace: false,
         });
         if (applied) {
           setComposerHighlightedItemId(null);
-          onSideQuestionCommand("");
         }
         return;
       }

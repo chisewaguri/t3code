@@ -46,7 +46,7 @@ import type { UsageLimitSourceSnapshots } from "@t3tools/contracts";
 import { feedbackBannerItem } from "./chat/ComposerFeedback";
 import { useUsageLimitsPanel } from "./chat/useUsageLimitsPanel";
 import { useSideQuestionPanel } from "./chat/useSideQuestionPanel";
-import { parseSideQuestionCommand } from "@t3tools/shared/sideQuestion";
+import { ComposerSideQuestion } from "./chat/ComposerSideQuestion";
 import { useWorktreeSetup } from "./chat/useWorktreeSetup";
 import { useChatShortcuts } from "./chat/useChatShortcuts";
 import { ChatBannerLane } from "./chat/ChatBannerLane";
@@ -1588,13 +1588,12 @@ export default function ChatView(props: ChatViewProps) {
   const gitStatusCwd = activeThread?.worktreePath ?? gitCwd;
   const sideQuestionPanel = useSideQuestionPanel({
     environmentId,
-    threadId: activeThread?.id ?? null,
+    threadId: serverThread?.id ?? null,
     threadKey: routeThreadKey,
     providerSlashCommands:
       activeProviderStatus === null
         ? null
         : resolveProviderSlashCommandsForCwd(activeProviderStatus, gitCwd),
-    cwd: gitCwd,
     ask: askSideQuestion,
   });
   const gitStatusQuery = useEnvironmentQuery(
@@ -2626,14 +2625,12 @@ export default function ChatView(props: ChatViewProps) {
       (item) => item !== null,
     );
     const usageLimitsItems = usageLimitsBanner === null ? [] : [usageLimitsBanner];
-    const sideQuestionItems = sideQuestionPanel.banner === null ? [] : [sideQuestionPanel.banner];
     const projectCloneItems = projectCloneBannerItem === null ? [] : [projectCloneBannerItem];
     if (!localCheckoutBranchMismatch || !showBranchMismatchBanner || !activeBranchMismatchKey) {
       return [
         ...feedbackBannerItems,
         ...limitRecoveryItems,
         ...usageLimitsItems,
-        ...sideQuestionItems,
         ...projectCloneItems,
         ...systemComposerBannerItems,
         ...backgroundWorkItems,
@@ -2643,7 +2640,6 @@ export default function ChatView(props: ChatViewProps) {
       ...feedbackBannerItems,
       ...limitRecoveryItems,
       ...usageLimitsItems,
-      ...sideQuestionItems,
       ...projectCloneItems,
       ...systemComposerBannerItems,
       ...backgroundWorkItems,
@@ -3513,6 +3509,20 @@ export default function ChatView(props: ChatViewProps) {
                               }
                             />
                           ) : null}
+                          {composerMounted && sideQuestionPanel.panel ? (
+                            <div className="relative z-10 mb-2">
+                              <ComposerSideQuestion
+                                state={sideQuestionPanel.panel}
+                                environmentId={environmentId}
+                                cwd={gitCwd ?? undefined}
+                                onAsk={sideQuestionPanel.ask}
+                                onDismiss={() => {
+                                  sideQuestionPanel.dismiss();
+                                  composerRef.current?.focusAtEnd();
+                                }}
+                              />
+                            </div>
+                          ) : null}
                           {!composerMounted ? null : (
                             <ChatComposer
                               canOperateThread={canOperateThread}
@@ -3588,8 +3598,10 @@ export default function ChatView(props: ChatViewProps) {
                                   : undefined
                               }
                               onSideQuestionCommand={
-                                sideQuestionPanel.offered && !composerHasNonPromptContent
-                                  ? sideQuestionPanel.open
+                                sideQuestionPanel.offered &&
+                                canOperateThread &&
+                                !composerHasNonPromptContent
+                                  ? sideQuestionPanel.ask
                                   : undefined
                               }
                               environmentUnavailable={activeEnvironmentUnavailableState}

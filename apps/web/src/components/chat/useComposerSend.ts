@@ -211,7 +211,7 @@ interface ComposerSendInput {
   readonly openUsageLimits: UsageLimitsPanel["open"];
   /** Whether the selected provider offers /btw and the panel can show it. */
   readonly sideQuestionOffered: boolean;
-  readonly askSideQuestion: (question: string) => void;
+  readonly askSideQuestion: (question: string) => boolean;
   readonly clearUsageLimitsFor: UsageLimitsPanel["clearFor"];
   readonly needsLoadBalancing: boolean;
   readonly loadBalancing: DraftEnvironmentRouting["loadBalancing"];
@@ -416,7 +416,6 @@ export function useComposerSend(input: ComposerSendInput) {
       }
       return;
     }
-    // The same rule for /btw: a lone command with a question opens the panel.
     const sideQuestionText = sideQuestionOffered
       ? parseSideQuestionCommand(promptRef.current)
       : null;
@@ -425,10 +424,11 @@ export function useComposerSend(input: ComposerSendInput) {
       !directAnnotation &&
       !draftHasNonPromptContent(composerDraftTarget)
     ) {
-      promptRef.current = "";
-      setComposerDraftPrompt(composerDraftTarget, "");
-      composerRef.current?.resetCursorState();
-      askSideQuestion(sideQuestionText);
+      if (askSideQuestion(sideQuestionText)) {
+        promptRef.current = "";
+        setComposerDraftPrompt(composerDraftTarget, "");
+        composerRef.current?.resetCursorState();
+      }
       return;
     }
 

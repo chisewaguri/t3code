@@ -1,14 +1,12 @@
 import type { EnvironmentId } from "@t3tools/contracts";
-import { LoaderCircleIcon, MessagesSquareIcon } from "lucide-react";
-import { useState, type FormEvent } from "react";
+import { MessageCircleQuestionMarkIcon, XIcon } from "lucide-react";
+import { useEffect, useRef, useState } from "react";
 
 import { Button } from "../ui/button";
-import { ComposerBanner } from "./ComposerBanner";
-import type { ComposerBannerStackItem } from "./ComposerBannerStack";
+import { Input } from "../ui/input";
 import ChatMarkdown from "../ChatMarkdown";
 
 export interface SideQuestionExchange {
-  /** Stable per ask, so two identical questions still key apart. */
   readonly id: string;
   readonly question: string;
   readonly answer: string | null;
@@ -17,105 +15,126 @@ export interface SideQuestionExchange {
 
 export interface SideQuestionPanelState {
   readonly threadKey: string;
+  readonly focusKey: string;
   readonly exchanges: ReadonlyArray<SideQuestionExchange>;
-  readonly pending: boolean;
+  readonly requestId: string | null;
   readonly error: string | null;
 }
 
-/**
- * The `/btw` answer surface. It sits over the transcript like a notice, so the
- * thread keeps its scroll position and its transcript gains nothing.
- */
-export function sideQuestionBannerItem(input: {
-  readonly id: string;
+export function ComposerSideQuestion({
+  state,
+  environmentId,
+  cwd,
+  onAsk,
+  onDismiss,
+}: {
   readonly state: SideQuestionPanelState;
   readonly environmentId: EnvironmentId;
   readonly cwd: string | undefined;
-  readonly onAsk: (question: string) => void;
+  readonly onAsk: (question: string) => boolean;
   readonly onDismiss: () => void;
-}): ComposerBannerStackItem {
-  const { state } = input;
-  return {
-    id: input.id,
-    variant: state.error === null ? "info" : "error",
-    priority: "notice",
-    icon: <MessagesSquareIcon />,
-    title: "Side question",
-    description: "Answers here stay out of the thread.",
-    dismissLabel: "Dismiss side question",
-    onDismiss: input.onDismiss,
-    children: (
-      <ComposerBanner.Scroll>
-        <ComposerBanner.Body className="flex flex-col gap-2 pt-1 pb-1.5 pe-2">
-          {state.exchanges.length === 0 ? null : (
-            <ol className="flex flex-col gap-3">
-              {state.exchanges.map((exchange) => (
-                <li key={exchange.id} className="flex min-w-0 flex-col gap-1">
-                  <span className="text-xs font-medium text-foreground">{exchange.question}</span>
-                  {exchange.answer === null ? (
-                    <span className="flex items-center gap-1.5 text-xs text-muted-foreground">
-                      <LoaderCircleIcon className="size-3 animate-spin" />
-                      Thinking…
-                    </span>
-                  ) : (
-                    <div className="text-sm">
-                      <ChatMarkdown
-                        text={exchange.answer}
-                        cwd={input.cwd}
-                        environmentId={input.environmentId}
-                      />
-                      {exchange.synthetic ? (
-                        <span className="text-xs text-muted-foreground">
-                          Answered without the session's own model.
-                        </span>
-                      ) : null}
-                    </div>
-                  )}
-                </li>
-              ))}
-            </ol>
-          )}
-          {state.error === null ? null : (
-            <span className="text-xs text-destructive">{state.error}</span>
-          )}
-          <SideQuestionInput disabled={state.pending} onAsk={input.onAsk} />
-        </ComposerBanner.Body>
-      </ComposerBanner.Scroll>
-    ),
-  };
-}
-
-function SideQuestionInput(props: {
-  readonly disabled: boolean;
-  readonly onAsk: (question: string) => void;
 }) {
   const [value, setValue] = useState("");
-  const submit = (event: FormEvent) => {
-    event.preventDefault();
+  const latestRef = useRef<HTMLLIElement>(null);
+  const pending = state.requestId !== null;
+  useEffect(() => {
+    if (state.exchanges.length > 0) latestRef.current?.scrollIntoView({ block: "nearest" });
+  }, [state.exchanges]);
+  const submit = () => {
     const question = value.trim();
-    if (question.length === 0 || props.disabled) return;
-    setValue("");
-    props.onAsk(question);
+    if (!question || pending) return;
+    if (onAsk(question)) setValue("");
   };
   return (
-    <form className="flex min-w-0 items-center gap-2" onSubmit={submit}>
-      <input
-        aria-label="Side question"
-        className="min-w-0 flex-1 rounded-md border border-input bg-transparent px-2 py-1 text-sm outline-none focus-visible:border-ring"
-        placeholder="Ask a side question"
-        spellCheck={false}
-        value={value}
-        onChange={(event) => setValue(event.target.value)}
-        disabled={props.disabled}
-      />
-      <Button
-        size="xs"
-        type="submit"
-        variant="secondary"
-        disabled={props.disabled || !value.trim()}
-      >
-        Ask
-      </Button>
-    </form>
+    <section
+      aria-label="Side question"
+      className="overflow-hidden rounded-xl border border-border bg-popover text-popover-foreground shadow-sm"
+      onKeyDown={(event) => {
+        if (event.key === "Escape" && !event.nativeEvent.isComposing) {
+          event.preventDefault();
+          event.stopPropagation();
+          onDismiss();
+        }
+      }}
+    >
+      <div className="flex items-center gap-2 px-3 py-2">
+        <MessageCircleQuestionMarkIcon aria-hidden className="size-4 text-muted-foreground" />
+        <h2 className="text-sm font-medium">Side question</h2>
+        <span className="min-w-0 flex-1 truncate text-xs text-muted-foreground">
+          Not saved to the thread
+        </span>
+        <Button
+          type="button"
+          size="icon-xs"
+          variant="ghost"
+          aria-label="Close side question"
+          onClick={onDismiss}
+        >
+          <XIcon />
+        </Button>
+      </div>
+      {state.exchanges.length > 0 ? (
+        <ol className="max-h-[min(20rem,35dvh)] space-y-4 overflow-y-auto border-t border-border px-3 py-3">
+          {state.exchanges.map((exchange, index) => (
+            <li
+              key={exchange.id}
+              ref={index === state.exchanges.length - 1 ? latestRef : undefined}
+              className="space-y-2"
+            >
+              <p className="whitespace-pre-wrap text-sm font-medium">{exchange.question}</p>
+              {exchange.answer !== null ? (
+                <div className="text-sm">
+                  <ChatMarkdown text={exchange.answer} cwd={cwd} environmentId={environmentId} />
+                  {exchange.synthetic ? (
+                    <p className="mt-1 text-xs text-muted-foreground">
+                      Claude returned a fallback response.
+                    </p>
+                  ) : null}
+                </div>
+              ) : pending ? (
+                <p role="status" className="text-sm text-muted-foreground">
+                  Thinking…
+                </p>
+              ) : null}
+            </li>
+          ))}
+        </ol>
+      ) : null}
+      {state.error ? (
+        <p role="alert" className="px-3 pb-2 text-sm text-destructive">
+          {state.error}
+        </p>
+      ) : null}
+      <div className="flex items-center gap-2 border-t border-border p-3">
+        <Input
+          key={state.focusKey}
+          autoFocus
+          aria-label="Ask a side question"
+          placeholder={
+            state.exchanges.length === 0
+              ? "Ask a question about this conversation…"
+              : "Ask a follow-up…"
+          }
+          value={value}
+          onValueChange={setValue}
+          onKeyDown={(event) => {
+            if (event.key === "Enter" && !event.nativeEvent.isComposing) {
+              event.preventDefault();
+              event.stopPropagation();
+              submit();
+            }
+          }}
+        />
+        <Button
+          type="button"
+          size="sm"
+          variant="secondary"
+          disabled={pending || !value.trim()}
+          onClick={submit}
+        >
+          {pending ? "Asking…" : "Ask"}
+        </Button>
+      </div>
+    </section>
   );
 }

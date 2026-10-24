@@ -159,6 +159,7 @@ import {
   projectThreadProjectionForWire,
 } from "./orchestration-v2/WireProjection.ts";
 import * as ProjectStore from "./orchestration-v2/ProjectStore.ts";
+import * as RuntimePolicy from "./orchestration-v2/RuntimePolicy.ts";
 import * as ThreadSearch from "./orchestration-v2/ThreadSearch.ts";
 import * as OrchestrationEventStore from "./persistence/OrchestrationEventStore.ts";
 import { userFacingDispatchErrorMessage } from "./orchestration-v2/UserFacingErrors.ts";
@@ -1244,6 +1245,9 @@ export const layerWsRpc = (
       const threadSearch = yield* ThreadSearch.ThreadSearch;
 
       const providerSessionsV2 = yield* ProviderSessionManager.ProviderSessionManagerV2;
+      const runtimePolicy = yield* RuntimePolicy.RuntimePolicyV2.pipe(
+        Effect.provide(RuntimePolicy.layerFromProjectStore),
+      );
       const mcpAppRequests = yield* McpAppRequests.McpAppRequests;
       const analytics = yield* AnalyticsService.AnalyticsService;
       const originProps = clientAnalyticsProps;
@@ -2380,16 +2384,10 @@ export const layerWsRpc = (
                   }),
                 );
               }
-              // A dormant session has no live runtime, but the thread's native
-              // session is still on disk, so reopen it the way the next turn
-              // would. The adapter then resumes it for the question alone.
-              // RuntimePolicyV2 resolves to the thread's own fields, which is
-              // what the CLI surfaces have on hand here.
-              const sideQuestionRuntimePolicy = {
-                runtimeMode: projection.thread.runtimeMode,
-                interactionMode: projection.thread.interactionMode,
-                cwd: projection.thread.worktreePath,
-              };
+              const sideQuestionRuntimePolicy = yield* runtimePolicy.resolve({
+                thread: projection.thread,
+                modelSelection: projection.thread.modelSelection,
+              });
               const live = Option.getOrNull(yield* providerSessionsV2.get(providerSessionId));
               const existingSession = projection.providerSessions.find(
                 (candidate) => candidate.id === providerSessionId,

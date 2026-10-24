@@ -408,8 +408,6 @@ export function createThreadEnvironmentAtoms<R, E>(
     askSideQuestion: createEnvironmentRpcCommand(runtime, {
       label: "environment-data:commands:thread:ask-side-question",
       tag: WS_METHODS.providerAskSideQuestion,
-      scheduler,
-      concurrency,
     }),
   };
   const optimistic = createOptimisticThreadLifecycle(snapshotAtom);

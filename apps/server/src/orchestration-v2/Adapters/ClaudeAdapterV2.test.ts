@@ -2309,7 +2309,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
                   stopTask: () => Effect.void,
                   ...(ask === undefined ? {} : { askSideQuestion: ask }),
                   interrupt: Effect.void,
-                  close: Effect.void,
+                  close: options.close?.(sdkMessages) ?? Effect.void,
                 };
               }
               const processMessages =
@@ -2548,7 +2548,12 @@ describe("ClaudeAdapterV2 background wake turns", () => {
   it.effect("resumes a dormant session in its own process to answer", () =>
     Effect.gen(function* () {
       let openedWith:
-        | { resume: string | undefined; tools: unknown; permissionMode: string | undefined }
+        | {
+            resume: string | undefined;
+            resumeSessionAt: string | undefined;
+            tools: unknown;
+            permissionMode: string | undefined;
+          }
         | undefined;
       let askedInResumed = 0;
       const harness = yield* makeWakeHarnessWithOptions({
@@ -2556,6 +2561,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
           Effect.sync(() => {
             openedWith = {
               resume: options.resume,
+              resumeSessionAt: options.resumeSessionAt,
               tools: options.tools,
               permissionMode: options.permissionMode,
             };
@@ -2570,7 +2576,14 @@ describe("ClaudeAdapterV2 background wake turns", () => {
       });
       // No turn has run, so the session has no live CLI process.
       const answer = yield* harness.runtime.askSideQuestion!({
-        providerThread: harness.providerThread,
+        providerThread: {
+          ...harness.providerThread,
+          nativeConversationHeadRef: {
+            driver: ProviderDriverKind.make("claudeAgent"),
+            nativeId: "head-before-rollback",
+            strength: "strong",
+          },
+        },
         question: "Anything?",
       });
 
@@ -2579,6 +2592,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
       // It resumes the thread's own native session, with no tools, and never
       // prompts the thread.
       assert.equal(openedWith?.resume, WAKE_NATIVE_SESSION);
+      assert.equal(openedWith?.resumeSessionAt, "head-before-rollback");
       assert.deepEqual(openedWith?.tools, []);
       assert.equal(openedWith?.permissionMode, "dontAsk");
       assert.equal(harness.offeredMessages.length, 0);
@@ -2589,10 +2603,64 @@ describe("ClaudeAdapterV2 background wake turns", () => {
     ),
   );
 
+  it.effect.each([false, true])(
+    "bounds side questions without starting another turn when live=%s",
+    (live) =>
+      Effect.gen(function* () {
+        const asked = yield* Deferred.make<void>();
+        let closed = 0;
+        const ask = () => Deferred.succeed(asked, undefined).pipe(Effect.andThen(Effect.never));
+        const harness = yield* makeWakeHarnessWithOptions({
+          askSideQuestion: ask,
+          openForSideQuestion: () => Effect.succeed({ answer: ask }),
+          close: () =>
+            Effect.sync(() => {
+              closed += 1;
+            }),
+        });
+        if (live) {
+          yield* harness.runtime.startTurn(
+            makeClaudeTestTurnInput({
+              threadId: harness.threadId,
+              providerThread: harness.providerThread,
+              now: yield* DateTime.now,
+              attemptId: RunAttemptId.make("bounded-side-question"),
+              text: "Refactor the parser",
+              attachments: [],
+            }),
+          );
+        }
+        const offeredBefore = harness.offeredMessages.length;
+        const request = yield* harness.runtime.askSideQuestion!({
+          providerThread: harness.providerThread,
+          question: "Anything?",
+        }).pipe(Effect.flip, Effect.forkChild);
+        yield* Deferred.await(asked);
+        yield* TestClock.adjust("90 seconds");
+        assert.notEqual(request.pollUnsafe(), undefined);
+        const error = yield* Fiber.join(request);
+        assert.equal(
+          error._tag === "ProviderAdapterProtocolError" ? error.detail : error._tag,
+          "Claude did not answer the side question in time.",
+        );
+        assert.equal(closed, live ? 0 : 1);
+        assert.equal(harness.offeredMessages.length, offeredBefore);
+      }).pipe(
+        Effect.provide(
+          Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+        ),
+      ),
+  );
+
   it.effect("says so when the resumed process cannot answer side questions", () =>
     Effect.gen(function* () {
+      let closed = 0;
       const harness = yield* makeWakeHarnessWithOptions({
         openForSideQuestion: () => Effect.succeed({}),
+        close: () =>
+          Effect.sync(() => {
+            closed += 1;
+          }),
       });
       const error = yield* harness.runtime.askSideQuestion!({
         providerThread: harness.providerThread,
@@ -2603,6 +2671,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
         error._tag === "ProviderAdapterProtocolError" ? error.detail : error._tag,
         "This Claude Code version cannot answer side questions. Update it first.",
       );
+      assert.equal(closed, 1);
     }).pipe(
       Effect.provide(
         Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),

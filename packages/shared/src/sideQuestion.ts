@@ -14,6 +14,5 @@ export const SIDE_QUESTION_COMMAND = {
 export function parseSideQuestionCommand(text: string): string | null {
   const match = /^\/btw(?:\s+([\s\S]*))?$/i.exec(text.trim());
   if (!match) return null;
-  const question = match[1]?.trim() ?? "";
-  return question.length > 0 ? question : null;
+  return match[1]?.trim() ?? "";
 }

@@ -18,9 +18,9 @@ describe("parseSideQuestionCommand", () => {
     expect(parseSideQuestionCommand("/BTW why?")).toBe("why?");
   });
 
-  it("returns null without a question so a bare command opens the panel instead", () => {
-    expect(parseSideQuestionCommand("/btw")).toBeNull();
-    expect(parseSideQuestionCommand("/btw   ")).toBeNull();
+  it("recognizes a bare command so sending it opens the panel", () => {
+    expect(parseSideQuestionCommand("/btw")).toBe("");
+    expect(parseSideQuestionCommand("/btw   ")).toBe("");
   });
 
   it("leaves ordinary prompts and other commands alone", () => {
